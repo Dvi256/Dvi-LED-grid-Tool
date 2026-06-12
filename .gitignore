@@ -1,0 +1,11 @@
+# Logs
+*.log
+*.err.log
+*.out.log
+
+# Backup files
+*.bak-*
+
+# IDE / Editor
+.claude/
+.gemini/

@@ -7075,7 +7075,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3</textarea>
             <label class="toggle"><input id="showPortLabels" type="checkbox" checked> Signal Cable Counts</label>
             <label class="toggle"><input id="showPortBoundaries" type="checkbox" checked> Port Boundaries</label>
           </div>
-          <p class="help">Default signal capacity: 30 panels for 500 x 500 mm P3.9, or 15 panels for 500 x 1000 mm P3.9, per sending-card Ethernet port / main signal cable. One main signal cable feeds the first panel on each run; the remaining panels use panel-to-panel loop cables. NovaLCT theoretical ceiling is 650,000 pixels per port; safe commissioning targets stay lower for refresh, grayscale, and frame-rate headroom.</p>
+          <p class="help">Signal capacity is calculated from pixel load per sending-card Ethernet port / main signal cable. The DVI default is 491,520 pixels per main signal run, which derives 30 panels at 128 x 128 px or 15 panels at 128 x 256 px. One main signal cable feeds the first panel; remaining panels use panel-to-panel loop cables.</p>
         </div>
       </details>
 
@@ -7150,7 +7150,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3</textarea>
             <label class="toggle"><input id="showPowerLabels" type="checkbox" checked> Power Cable Counts</label>
             <label class="toggle"><input id="showPowerBoundaries" type="checkbox" checked> Power Boundaries</label>
           </div>
-          <p class="help">Default DVI power capacity: 16 panels for 500 x 500 mm, or 8 panels for 500 x 1000 mm, per main power cable. One main power cable feeds the first panel on each run; the remaining panels use panel-to-panel power loop cables. Final distribution, breakers, earthing, cabling, generator, and compliance checks must be confirmed locally.</p>
+          <p class="help">Power capacity is calculated from pixel-derived watt load per main power cable. The DVI field default uses a 262,144-pixel power budget, which derives 16 panels at 128 x 128 px or 8 panels at 128 x 256 px when using the same reference wattage. One main power cable feeds the first panel; remaining panels use panel-to-panel power loop cables. Final distribution and compliance must be confirmed locally.</p>
         </div>
       </details>
 
@@ -7552,9 +7552,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3</textarea>
       const CONTROL_PANEL_MIN_WIDTH = 248;
       const CONTROL_PANEL_MAX_WIDTH = 520;
       const DVI_SIGNAL_PIXELS_PER_MAIN = 491520;
-      const DVI_SIGNAL_PANELS_PER_HALF_METER = 30;
-      const DVI_SIGNAL_AREA_PER_MAIN_MM2 = 7500000;
-      const DVI_POWER_AREA_PER_MAIN_MM2 = 4000000;
+      const DVI_POWER_PIXELS_PER_MAIN = 262144;
       const NOVALCT_SAFE_PIXELS_PER_PORT = 540000;
       const NOVALCT_THEORETICAL_PIXELS_PER_PORT = 650000;
       const SIGNAL_ROUTE_LANE = 0.22;
@@ -7724,17 +7722,14 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
         return Math.round(numberValue(id, fallback, min, max));
       }
 
-      function dviPowerPanelsPerCable(cabinetW, cabinetH) {
-        const cabinetArea = Math.max(1, cabinetW * cabinetH);
-        return Math.max(1, Math.floor(DVI_POWER_AREA_PER_MAIN_MM2 / cabinetArea));
-      }
-
       function dviSignalPanelsPerPort(cabinetW, cabinetH, pixelsW, pixelsH) {
         const panelPixels = Math.max(1, pixelsW * pixelsH);
-        const panelArea = Math.max(1, cabinetW * cabinetH);
-        const pixelLimit = Math.floor(DVI_SIGNAL_PIXELS_PER_MAIN / panelPixels);
-        const areaLimit = Math.floor(DVI_SIGNAL_AREA_PER_MAIN_MM2 / panelArea);
-        return Math.max(1, Math.min(DVI_SIGNAL_PANELS_PER_HALF_METER, pixelLimit, areaLimit));
+        return Math.max(1, Math.floor(DVI_SIGNAL_PIXELS_PER_MAIN / panelPixels));
+      }
+
+      function dviPowerPanelsPerCable(cabinetW, cabinetH, pixelsW, pixelsH) {
+        const panelPixels = Math.max(1, (Number(pixelsW) || 1) * (Number(pixelsH) || 1));
+        return Math.max(1, Math.floor(DVI_POWER_PIXELS_PER_MAIN / panelPixels));
       }
 
       function signalPixelLimitForRule(state) {
@@ -7753,12 +7748,6 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
 
       function signalPanelLimitForRule(state) {
         const panelPixels = Math.max(1, state.pixelsW * state.pixelsH);
-        if (state.signalCableRule === "dvi") {
-          return dviSignalPanelsPerPort(state.cabinetW, state.cabinetH, state.pixelsW, state.pixelsH);
-        }
-        if (state.signalCableRule === "manual") {
-          return state.panelsPerPort;
-        }
         return Math.max(1, Math.floor(signalPixelLimitForRule(state) / panelPixels));
       }
 
@@ -8605,20 +8594,41 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
         return Math.max(1, Math.round(spec.pixelsW) * Math.round(spec.pixelsH));
       }
 
-      function tileSignalPanelLimitForRule(state, x, y) {
-        const spec = tileSpecFor(state, x, y);
-        if (state.signalCableRule === "dvi") {
-          return dviSignalPanelsPerPort(spec.panelW, spec.panelH, spec.pixelsW, spec.pixelsH);
+      function referencePixelCountForPower(state) {
+        return Math.max(1, Math.round(state.pixelsW || 1) * Math.round(state.pixelsH || 1));
+      }
+
+      function tilePowerWattsFor(state, x, y, mode = "max") {
+        const referencePixels = referencePixelCountForPower(state);
+        const watts = mode === "average" ? state.cabinetAveragePowerW : state.cabinetPowerW;
+        return Math.max(0, watts * (tilePixelCountFor(state, x, y) / referencePixels));
+      }
+
+      function dviPowerWattsPerCable(state) {
+        const wattsPerReferencePixel = state.cabinetPowerW / referencePixelCountForPower(state);
+        return Math.max(1, wattsPerReferencePixel * DVI_POWER_PIXELS_PER_MAIN);
+      }
+
+      function powerWattsLimitForRule(state, electricalWattsPerCable) {
+        if (state.powerCableRule === "electrical") return Math.max(1, electricalWattsPerCable);
+        if (state.powerCableRule === "manual") {
+          return Math.max(1, state.powerPanelsPerCable) * Math.max(1, state.cabinetPowerW);
         }
-        if (state.signalCableRule === "manual") return state.panelsPerPort;
+        return dviPowerWattsPerCable(state);
+      }
+
+      function tileSignalPanelLimitForRule(state, x, y) {
         return Math.max(1, Math.floor(signalPixelLimitForRule(state) / tilePixelCountFor(state, x, y)));
       }
 
-      function tilePowerPanelLimitForRule(state, x, y, electricalPanelsPerCable) {
+      function tilePowerPanelLimitForRule(state, x, y, electricalPanelsPerCable, electricalWattsPerCable) {
         const spec = tileSpecFor(state, x, y);
         if (state.powerCableRule === "manual") return Math.max(1, state.powerPanelsPerCable);
-        if (state.powerCableRule === "electrical") return Math.max(1, electricalPanelsPerCable);
-        return dviPowerPanelsPerCable(spec.panelW, spec.panelH);
+        if (state.powerCableRule === "electrical") {
+          const tileWatts = tilePowerWattsFor(state, x, y);
+          return Math.max(1, Math.floor(Math.max(1, electricalWattsPerCable || 0) / Math.max(1, tileWatts)));
+        }
+        return dviPowerPanelsPerCable(spec.panelW, spec.panelH, spec.pixelsW, spec.pixelsH);
       }
 
       function autoSignalGroupsForRoute(state, route) {
@@ -8628,43 +8638,44 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
         chunks.forEach((chunk) => {
           let current = [];
           let pixels = 0;
-          let groupPanelLimit = Infinity;
           chunk.forEach((item) => {
             const itemPixels = tilePixelCountFor(state, item.x, item.y);
-            const itemPanelLimit = tileSignalPanelLimitForRule(state, item.x, item.y);
-            const nextPanelLimit = Math.min(groupPanelLimit, itemPanelLimit);
-            const wouldOverPanel = current.length > 0 && current.length + 1 > nextPanelLimit;
             const wouldOverPixels = current.length > 0 && pixelLimit > 0 && pixels + itemPixels > pixelLimit;
-            if (wouldOverPanel || wouldOverPixels) {
+            if (wouldOverPixels) {
               groups.push(current);
               current = [];
               pixels = 0;
-              groupPanelLimit = Infinity;
             }
             current.push(item);
             pixels += itemPixels;
-            groupPanelLimit = Math.min(groupPanelLimit, itemPanelLimit);
           });
           if (current.length) groups.push(current);
         });
         return groups;
       }
 
-      function autoPowerGroupsForRoute(state, poweredRoute, electricalPanelsPerCable) {
+      function autoPowerGroupsForRoute(state, poweredRoute, electricalPanelsPerCable, electricalWattsPerCable) {
         const chunks = routeGroups(poweredRoute, state);
         const groups = [];
+        const wattsLimit = powerWattsLimitForRule(state, electricalWattsPerCable);
         chunks.forEach((chunk) => {
           let current = [];
+          let watts = 0;
           let groupPanelLimit = Infinity;
           chunk.forEach((item) => {
-            const itemPanelLimit = tilePowerPanelLimitForRule(state, item.x, item.y, electricalPanelsPerCable);
+            const itemWatts = tilePowerWattsFor(state, item.x, item.y);
+            const itemPanelLimit = tilePowerPanelLimitForRule(state, item.x, item.y, electricalPanelsPerCable, electricalWattsPerCable);
             const nextPanelLimit = Math.min(groupPanelLimit, itemPanelLimit);
-            if (current.length > 0 && current.length + 1 > nextPanelLimit) {
+            const wouldOverPanels = current.length > 0 && current.length + 1 > nextPanelLimit;
+            const wouldOverWatts = current.length > 0 && watts + itemWatts > wattsLimit;
+            if (wouldOverPanels || wouldOverWatts) {
               groups.push(current);
               current = [];
+              watts = 0;
               groupPanelLimit = Infinity;
             }
             current.push(item);
+            watts += itemWatts;
             groupPanelLimit = Math.min(groupPanelLimit, itemPanelLimit);
           });
           if (current.length) groups.push(current);
@@ -8797,7 +8808,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
               load.maxX = Math.max(load.maxX, x);
               load.minY = Math.min(load.minY, y);
               load.maxY = Math.max(load.maxY, y);
-              load.overloaded = !inRange || load.panels > load.panelLimit || (pixelLimit > 0 && load.pixels > pixelLimit);
+              load.overloaded = !inRange || (pixelLimit > 0 && load.pixels > pixelLimit);
               if (!inRange) overflowPanels += 1;
               
               const assignment = {
@@ -8857,7 +8868,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
             load.maxX = Math.max(load.maxX, item.x);
             load.minY = Math.min(load.minY, item.y);
             load.maxY = Math.max(load.maxY, item.y);
-            load.overloaded = !inRange || load.panels > load.panelLimit || (pixelLimit > 0 && load.pixels > pixelLimit);
+            load.overloaded = !inRange || (pixelLimit > 0 && load.pixels > pixelLimit);
             const assignment = {
               orderNumber,
               portIndex,
@@ -8935,9 +8946,23 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
       }
 
       function buildPowerPlan(state, m) {
-        const poweredPanels = state.activePanelsForPower || m.activePanels + (state.blankPanelsPowered ? m.virtualPanels : 0);
-        const totalWatts = poweredPanels * state.cabinetPowerW;
-        const averageWatts = poweredPanels * state.cabinetAveragePowerW;
+        let poweredRoute = [];
+        try {
+          const virtualSet = parseVirtualTiles(state);
+          const spacerSet = parseLayoutSpacerTiles(state);
+          poweredRoute = state.blankPanelsPowered
+            ? routeAll(state, spacerSet)
+            : routeAll(state, virtualSet);
+        } catch (error) {
+          poweredRoute = [];
+        }
+        const poweredPanels = state.activePanelsForPower || (poweredRoute.length || m.activePanels + (state.blankPanelsPowered ? m.virtualPanels : 0));
+        const totalWatts = poweredRoute.length
+          ? poweredRoute.reduce((sum, item) => sum + tilePowerWattsFor(state, item.x, item.y, "max"), 0)
+          : poweredPanels * state.cabinetPowerW;
+        const averageWatts = poweredRoute.length
+          ? poweredRoute.reduce((sum, item) => sum + tilePowerWattsFor(state, item.x, item.y, "average"), 0)
+          : poweredPanels * state.cabinetAveragePowerW;
         const totalAmpsSingle = state.supplyVoltage > 0 && state.powerFactor > 0 ? totalWatts / (state.supplyVoltage * state.powerFactor) : 0;
         const averageAmpsSingle = state.supplyVoltage > 0 && state.powerFactor > 0 ? averageWatts / (state.supplyVoltage * state.powerFactor) : 0;
         const ampsPerPhase = state.phaseMode === "three" ? totalAmpsSingle / 3 : totalAmpsSingle;
@@ -8977,24 +9002,25 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           : routeAll(state, virtualSet);
         const usableWattsPerCable = state.supplyVoltage * state.circuitRatingA * (state.circuitLoadPercent / 100) * state.powerFactor;
         const electricalPanelsPerCable = state.cabinetPowerW > 0 ? Math.max(1, Math.floor(usableWattsPerCable / state.cabinetPowerW)) : Math.max(1, poweredRoute.length || 1);
-        const routePanelLimits = poweredRoute.map((item) => tilePowerPanelLimitForRule(state, item.x, item.y, electricalPanelsPerCable));
+        const routePanelLimits = poweredRoute.map((item) => tilePowerPanelLimitForRule(state, item.x, item.y, electricalPanelsPerCable, usableWattsPerCable));
         const dviPanelsPerCable = poweredRoute.length
           ? Math.min(...poweredRoute.map((item) => {
             const spec = tileSpecFor(state, item.x, item.y);
-            return dviPowerPanelsPerCable(spec.panelW, spec.panelH);
+            return dviPowerPanelsPerCable(spec.panelW, spec.panelH, spec.pixelsW, spec.pixelsH);
           }))
-          : dviPowerPanelsPerCable(state.cabinetW, state.cabinetH);
+          : dviPowerPanelsPerCable(state.cabinetW, state.cabinetH, state.pixelsW, state.pixelsH);
         let panelsPerCable = routePanelLimits.length ? Math.min(...routePanelLimits) : dviPanelsPerCable;
         let ruleLabel = "DVI field default";
         if (state.powerCableRule === "manual") {
           panelsPerCable = Math.max(1, state.powerPanelsPerCable);
           ruleLabel = "Manual panel count";
         } else if (state.powerCableRule === "electrical") {
-          panelsPerCable = electricalPanelsPerCable;
+          panelsPerCable = routePanelLimits.length ? Math.min(...routePanelLimits) : electricalPanelsPerCable;
           ruleLabel = "Watts / circuit estimate";
         }
+        const wattsPerCableLimit = powerWattsLimitForRule(state, usableWattsPerCable);
         const powerChunks = routeGroups(poweredRoute, state);
-        const autoPowerGroups = autoPowerGroupsForRoute(state, poweredRoute, electricalPanelsPerCable);
+        const autoPowerGroups = autoPowerGroupsForRoute(state, poweredRoute, electricalPanelsPerCable, usableWattsPerCable);
         const capacityCableCount = poweredRoute.length ? autoPowerGroups.length : 0;
         const cableCount = poweredRoute.length
           ? (state.powerCableCountMode === "manual" ? Math.max(1, state.manualPowerCables) : capacityCableCount)
@@ -9007,6 +9033,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           loops: 0,
           panelLimit: Infinity,
           watts: 0,
+          averageWatts: 0,
           amps: 0,
           overloaded: false
         }));
@@ -9029,12 +9056,15 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
               : 0;
             const cable = cables[cableIndex];
             if (!cable) return;
-            const tilePanelLimit = tilePowerPanelLimitForRule(state, item.x, item.y, electricalPanelsPerCable);
+            const tilePanelLimit = tilePowerPanelLimitForRule(state, item.x, item.y, electricalPanelsPerCable, usableWattsPerCable);
+            const tileWatts = tilePowerWattsFor(state, item.x, item.y, "max");
+            const tileAverageWatts = tilePowerWattsFor(state, item.x, item.y, "average");
             cable.panels += 1;
             cable.panelLimit = Math.min(cable.panelLimit, tilePanelLimit);
-            cable.watts += state.cabinetPowerW;
+            cable.watts += tileWatts;
+            cable.averageWatts += tileAverageWatts;
             cable.amps = state.supplyVoltage > 0 && state.powerFactor > 0 ? cable.watts / (state.supplyVoltage * state.powerFactor) : 0;
-            cable.overloaded = cable.panels > cable.panelLimit;
+            cable.overloaded = cable.panels > cable.panelLimit || cable.watts > wattsPerCableLimit;
             byTile.set(key(item.x, item.y), {
               cableIndex,
               label: cable.label,
@@ -9042,6 +9072,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
               panelInCable: cable.panels,
               panelsPerCable: cable.panelLimit,
               wattsInCable: cable.watts,
+              averageWattsInCable: cable.averageWatts,
               ampsInCable: cable.amps,
               overloaded: cable.overloaded
             });
@@ -9083,6 +9114,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           capacityCableCount,
           cableCount,
           overloaded,
+          wattsPerCableLimit,
           loopCount: powerPanelLoopCount,
           chainCount: powerLoopData.chainCount,
           loops: powerLoopData.loops,
@@ -9149,9 +9181,9 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           `Cabinets: ${m.activePanels}/${m.totalPanels} active/total, ${m.virtualPanels} blank, ${m.spacerPanels} spacer/gap cells`,
           `Reference cabinet: ${cabinetSummaryText(state)} | Pitch ${formatPitchDisplay(m)}`,
           `Route: ${routeName}, ${state.hDir.toUpperCase()} / ${state.vDir.toUpperCase()}, ${route.length} routed cabinets`,
-          `Signal needed: ${activeSignalCount} main signal cable${activeSignalCount === 1 ? "" : "s"} / ${portPlan.loopCount || 0} P2P signal loop cable${(portPlan.loopCount || 0) === 1 ? "" : "s"} | one main feed enters the first panel, then P2P cables link the remaining panels | ${portPlan.ruleLabel} | ${portPlan.effectivePanelsPerPort} panels/port effective`,
+          `Signal needed: ${activeSignalCount} main signal cable${activeSignalCount === 1 ? "" : "s"} / ${portPlan.loopCount || 0} P2P signal loop cable${(portPlan.loopCount || 0) === 1 ? "" : "s"} | one main feed enters the first panel, then P2P cables link the remaining panels | ${portPlan.ruleLabel} | ${formatInteger(portPlan.pixelLimit)} px/main budget`,
           `Signal allocation: ${signalSummary || "No active signal load"}`,
-          `Power needed: ${activePowerCount} main power cable${activePowerCount === 1 ? "" : "s"} / ${powerCablePlan.loopCount || 0} P2P power loop cable${(powerCablePlan.loopCount || 0) === 1 ? "" : "s"} | one main feed enters the first panel, then P2P cables link the remaining panels | ${powerCablePlan.ruleLabel} | ${powerCablePlan.panelsPerCable} panels/main effective`,
+          `Power needed: ${activePowerCount} main power cable${activePowerCount === 1 ? "" : "s"} / ${powerCablePlan.loopCount || 0} P2P power loop cable${(powerCablePlan.loopCount || 0) === 1 ? "" : "s"} | one main feed enters the first panel, then P2P cables link the remaining panels | ${powerCablePlan.ruleLabel} | ${(powerCablePlan.wattsPerCableLimit / 1000).toFixed(2)} kW/main load budget`,
           `Power allocation: ${powerSummary || "No active power load"}`,
           `Electrical load: ${powerPlan.totalKw.toFixed(2)} kW max, ${powerPlan.averageKw.toFixed(2)} kW average, ${powerPlan.circuits} x ${state.circuitRatingA} A circuit${powerPlan.circuits === 1 ? "" : "s"} at ${state.circuitLoadPercent}% usable`,
           `Sheet plan: ${exportSheetPlanLine(state, portPlan, powerCablePlan)}`
@@ -10573,12 +10605,12 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           numberValue("powerFactor", 0.95, 0.5, 1);
         const electricalPanels = cabinetPowerW > 0 ? Math.max(1, Math.floor(usableWattsPerCable / cabinetPowerW)) : 1;
         let poweredRouteForCable = null;
-        let mixedAwarePowerLimit = dviPowerPanelsPerCable(cabinetW, cabinetH);
+        let mixedAwarePowerLimit = dviPowerPanelsPerCable(cabinetW, cabinetH, pixelsW, pixelsH);
         if (liveStateForCable && liveVirtualSetForCable) {
           poweredRouteForCable = liveStateForCable.blankPanelsPowered
             ? routeAll(liveStateForCable, liveSpacerSetForCable || new Set())
             : routeAll(liveStateForCable, liveVirtualSetForCable);
-          const routeLimits = poweredRouteForCable.map((item) => tilePowerPanelLimitForRule(liveStateForCable, item.x, item.y, electricalPanels));
+          const routeLimits = poweredRouteForCable.map((item) => tilePowerPanelLimitForRule(liveStateForCable, item.x, item.y, electricalPanels, usableWattsPerCable));
           if (routeLimits.length) mixedAwarePowerLimit = Math.min(...routeLimits);
         }
         if (el.powerCableRule.value === "dvi") {
@@ -10595,7 +10627,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
             const panelsPerPowerCable = Number.parseInt(el.powerPanelsPerCable.value, 10) || 1;
             let autoPowerCables = Math.max(1, Math.ceil(powerPanelCount / Math.max(1, panelsPerPowerCable)));
             if (liveStateForCable && poweredRouteForCable) {
-              autoPowerCables = Math.max(1, autoPowerGroupsForRoute(liveStateForCable, poweredRouteForCable, electricalPanels).length);
+              autoPowerCables = Math.max(1, autoPowerGroupsForRoute(liveStateForCable, poweredRouteForCable, electricalPanels, usableWattsPerCable).length);
             }
             el.manualPowerCables.value = Math.max(1, autoPowerCables);
             el.manualPowerCables.disabled = true;
@@ -10798,7 +10830,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
             }
           },
           {
-            name: "Manual 500x1000 size triggers DVI cable limits",
+            name: "Pixel-based 500x1000 transparent limits",
             overrides: {
               cabinetW: 500,
               cabinetH: 1000,
@@ -10818,14 +10850,18 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
               activePanels: 16,
               virtualPanels: 0,
               routeLength: 16,
-              portUsedPorts: 2,
+              portUsedPorts: 1,
               portOverloaded: false,
-              signalFirstPortPanels: 15,
+              signalFirstPortPanels: 16,
+              signalFirstPortLoops: 15,
+              signalLoopCount: 15,
               signalOverflowPanels: 0,
-              powerCableCount: 2,
-              powerPanelsPerCable: 8,
-              firstPowerCablePanels: 8,
-              lastPowerCablePanels: 8,
+              powerCableCount: 1,
+              powerPanelsPerCable: 16,
+              firstPowerCablePanels: 16,
+              firstPowerCableLoops: 15,
+              lastPowerCablePanels: 16,
+              powerLoopCount: 15,
               powerCircuits: 2
             }
           },
@@ -10892,7 +10928,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
               signalFirstPortPanels: 22,
               signalOverflowPanels: 0,
               powerCableCount: 5,
-              powerPanelsPerCable: 19,
+              powerPanelsPerCable: 12,
               firstPowerCablePanels: 18,
               lastPowerCablePanels: 17,
               powerCircuits: 6
@@ -10944,7 +10980,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
               rows: 2,
               signalCableRule: "manual",
               panelsPerPort: 2,
-              pixelsPerPort: 655360,
+              pixelsPerPort: 65536,
               sendingCards: 1,
               portsPerCard: 2,
               virtualTilesText: ""
@@ -11177,17 +11213,17 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           ["Port status", portPlan.overloaded ? `OVERLOAD: ${result.route.length} panels need ${portPlan.usedPorts} ports; ${portPlan.totalPorts} available` : `OK: ${result.route.length} panels across ${portPlan.usedPorts}/${portPlan.totalPorts} ports`],
           ["Signal cable mode", `${state.signalCableCountMode === "manual" ? `Manual ${portPlan.requestedCableCount} cable(s)` : "Auto by capacity"}; ${portPlan.ruleLabel}`],
           ["Signal pixel budget", `${formatInteger(portPlan.pixelLimit)} px selected; NovaLCT theoretical ceiling ${formatInteger(NOVALCT_THEORETICAL_PIXELS_PER_PORT)} px`],
-          ["Port capacity", `${portPlan.effectivePanelsPerPort} panels/port effective (${portPlan.panelLimit} panel limit, ${formatInteger(portPlan.pixelLimit)} px limit)`],
+          ["Signal capacity", `${formatInteger(portPlan.pixelLimit)} px/main; current-panel guide ${portPlan.effectivePanelsPerPort} panels`],
           ["Signal cable counts", signalCableCounts.length ? signalCableCounts.join("; ") : "No active signal panels"],
           ["Signal P2P loops", `${portPlan.loopCount || 0} panel-to-panel signal cable${(portPlan.loopCount || 0) === 1 ? "" : "s"} required after the main feed${(portPlan.portLoads.filter((load) => load.panels > 0).length) === 1 ? "" : "s"}`],
           ["Power profile", `${powerPlan.profile}, ${state.phaseMode === "three" ? "three phase balanced" : "single phase"}`],
-          ["Powered panels", `${powerPlan.poweredPanels} panels at ${state.cabinetPowerW} W max / ${state.cabinetAveragePowerW} W avg`],
+          ["Powered panels", `${powerPlan.poweredPanels} panels; reference ${state.cabinetPowerW} W max / ${state.cabinetAveragePowerW} W avg per ${formatInteger(referencePixelCountForPower(state))} px cabinet`],
           ["Power load max", `${powerPlan.totalKw.toFixed(2)} kW / ${powerPlan.apparentKva.toFixed(2)} kVA`],
           ["Power load average", `${powerPlan.averageKw.toFixed(2)} kW / ${powerPlan.averageKva.toFixed(2)} kVA`],
           ["Current max", state.phaseMode === "three" ? `${powerPlan.ampsPerPhase.toFixed(1)} A per phase` : `${powerPlan.totalAmpsSingle.toFixed(1)} A total`],
           ["Current average", state.phaseMode === "three" ? `${powerPlan.averageAmpsPerPhase.toFixed(1)} A per phase` : `${powerPlan.averageAmpsSingle.toFixed(1)} A total`],
           ["Circuits", `${powerPlan.circuits} x ${state.circuitRatingA} A at ${state.circuitLoadPercent}% usable${state.phaseMode === "three" ? ` (${powerPlan.circuitsPerPhase}/phase)` : ""}`],
-          ["Power cable capacity", `${powerCablePlan.panelsPerCable} panels/main cable (${powerCablePlan.ruleLabel})`],
+          ["Power capacity", `${(powerCablePlan.wattsPerCableLimit / 1000).toFixed(2)} kW/main; current-panel guide ${powerCablePlan.panelsPerCable} panels (${powerCablePlan.ruleLabel})`],
           ["Power cable mode", powerCablePlan.countMode === "manual" ? `Manual ${powerCablePlan.requestedCableCount} cable(s)` : "Auto by capacity"],
           ["Power cable counts", powerCableCounts.length ? powerCableCounts.join("; ") : "No powered panels"],
           ["Power P2P loops", `${powerCablePlan.loopCount || 0} panel-to-panel power cable${(powerCablePlan.loopCount || 0) === 1 ? "" : "s"} required after the main feed${(powerCablePlan.cables.filter((cable) => cable.panels > 0).length) === 1 ? "" : "s"}`],
@@ -11297,6 +11333,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
                 loops: powerCablePlan.loops || [],
                 overloaded: powerCablePlan.overloaded,
                 usableWattsPerCable: powerCablePlan.usableWattsPerCable,
+                wattsPerCableLimit: powerCablePlan.wattsPerCableLimit,
                 cables: powerCablePlan.cables.filter((cable) => cable.panels > 0).map((cable) => ({
                   label: cable.label,
                   phase: cable.phase,
@@ -11305,6 +11342,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
                   p2pLoopCables: cable.loops || 0,
                   mainCableFeeds: 1,
                   watts: cable.watts,
+                  averageWatts: cable.averageWatts || 0,
                   amps: cable.amps
                 }))
               },
@@ -11386,11 +11424,9 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
         
         const state = getState();
         const totalPorts = state.sendingCards * state.portsPerCard;
-        const panelLimit = state.signalCableRule === "dvi"
-          ? dviSignalPanelsPerPort(state.cabinetW, state.cabinetH, state.pixelsW, state.pixelsH)
-          : state.panelsPerPort;
+        const panelLimit = signalPanelLimitForRule(state);
         const panelPixels = state.pixelsW * state.pixelsH;
-        const pixelLimit = state.signalCableRule === "dvi" ? DVI_SIGNAL_PIXELS_PER_MAIN : state.pixelsPerPort;
+        const pixelLimit = signalPixelLimitForRule(state);
         
         for (let i = 0; i < totalPorts; i++) {
           const cardNum = Math.floor(i / state.portsPerCard) + 1;
@@ -12328,8 +12364,8 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           ["Cabinets", `${m.activePanels}/${m.totalPanels} active / total`],
           ["Cabinet", `${state.cabinetW} x ${state.cabinetH} mm / ${state.pixelsW} x ${state.pixelsH} px`],
           ["Pitch", `${m.pitchW.toFixed(3)} / ${m.pitchH.toFixed(3)} mm W/H`],
-          ["Signal", `${signalRows.filter((row) => row[0] !== "Overflow").length} main cable(s), ${portPlan.loopCount || 0} P2P loop(s), ${portPlan.effectivePanelsPerPort} panels/main`],
-          ["Power", `${powerRows.length} main cable(s), ${powerCablePlan.loopCount || 0} P2P loop(s), ${powerCablePlan.panelsPerCable} panels/main`],
+          ["Signal", `${signalRows.filter((row) => row[0] !== "Overflow").length} main cable(s), ${portPlan.loopCount || 0} P2P loop(s), ${formatInteger(portPlan.pixelLimit)} px/main`],
+          ["Power", `${powerRows.length} main cable(s), ${powerCablePlan.loopCount || 0} P2P loop(s), ${(powerCablePlan.wattsPerCableLimit / 1000).toFixed(2)} kW/main`],
           ["Load", `${powerPlan.totalKw.toFixed(2)} kW max / ${powerPlan.averageKw.toFixed(2)} kW avg`],
           ["Current", state.phaseMode === "three" ? `${powerPlan.ampsPerPhase.toFixed(1)} A per phase` : `${powerPlan.totalAmpsSingle.toFixed(1)} A total`],
           ["Circuits", `${powerPlan.circuits} x ${state.circuitRatingA} A at ${state.circuitLoadPercent}% usable`],
@@ -12506,8 +12542,8 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           ["Preset ID", `${primaryId.screenCode}/${primaryId.presetCode}`],
           ["Cabinets", `${m.activePanels}/${m.totalPanels} active / total`],
           ["Cabinet", `${state.cabinetW} x ${state.cabinetH} mm / ${state.pixelsW} x ${state.pixelsH} px`],
-          ["Signal", `${signalRows.filter((row) => row[0] !== "Overflow").length} main cable(s), ${portPlan.loopCount || 0} P2P loop(s)`],
-          ["Power", `${powerRows.length} main cable(s), ${powerCablePlan.loopCount || 0} P2P loop(s), ${powerPlan.totalKw.toFixed(2)} kW max`],
+          ["Signal", `${signalRows.filter((row) => row[0] !== "Overflow").length} main cable(s), ${portPlan.loopCount || 0} P2P loop(s), ${formatInteger(portPlan.pixelLimit)} px/main`],
+          ["Power", `${powerRows.length} main cable(s), ${powerCablePlan.loopCount || 0} P2P loop(s), ${(powerCablePlan.wattsPerCableLimit / 1000).toFixed(2)} kW/main`],
           ["Validation", audit.message]
         ];
         drawReportRows(context, "Display Summary", specRows, sideX, sideY, sideW, summaryH, theme);
@@ -13453,8 +13489,6 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
         const m = metrics(state, virtualSet);
         const powerPlan = buildPowerPlan(state, m);
         const spacerSet = parseLayoutSpacerTiles(state);
-        const panelCurrentA = state.supplyVoltage > 0 && state.powerFactor > 0 ? state.cabinetPowerW / (state.supplyVoltage * state.powerFactor) : 0;
-        const panelAverageCurrentA = state.supplyVoltage > 0 && state.powerFactor > 0 ? state.cabinetAveragePowerW / (state.supplyVoltage * state.powerFactor) : 0;
         const rows = [[
           "route_index", "display_order", "label", "screen_id", "preset_id", "preset_label", "column", "row", "x_px", "y_px", "width_px", "height_px",
           "width_mm", "height_mm", "sending_card", "sending_port", "port_panel_index", "port_loop_count", "port_label",
@@ -13478,6 +13512,10 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
             const powerCableSummary = powerCable ? powerCablePlan.cables[powerCable.cableIndex] : null;
             const outputIndex = outputIndexForOrder(order || 0, route.length, state.outputsCount);
             const pixelRect = tilePixelRectFor(state, x, y);
+            const panelWatts = isVirtual && !state.blankPanelsPowered ? 0 : tilePowerWattsFor(state, x, y, "max");
+            const panelAverageWatts = isVirtual && !state.blankPanelsPowered ? 0 : tilePowerWattsFor(state, x, y, "average");
+            const panelCurrentA = state.supplyVoltage > 0 && state.powerFactor > 0 ? panelWatts / (state.supplyVoltage * state.powerFactor) : 0;
+            const panelAverageCurrentA = state.supplyVoltage > 0 && state.powerFactor > 0 ? panelAverageWatts / (state.supplyVoltage * state.powerFactor) : 0;
             rows.push([
               order || "",
               order ? order + state.labelOffset : "",
@@ -13508,10 +13546,10 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
               state.visualMode,
               state.surfaceMode,
               isVirtual ? "yes" : "no",
-              isVirtual && !state.blankPanelsPowered ? 0 : state.cabinetPowerW,
-              isVirtual && !state.blankPanelsPowered ? 0 : state.cabinetAveragePowerW,
-              isVirtual && !state.blankPanelsPowered ? 0 : panelCurrentA.toFixed(3),
-              isVirtual && !state.blankPanelsPowered ? 0 : panelAverageCurrentA.toFixed(3),
+              panelWatts.toFixed(3),
+              panelAverageWatts.toFixed(3),
+              panelCurrentA.toFixed(3),
+              panelAverageCurrentA.toFixed(3),
               powerPlan.profile,
               powerCable ? powerCable.label : "",
               powerCable ? powerCable.panelInCable : "",
@@ -13521,7 +13559,7 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
               powerCable ? powerCable.panelsPerCable : "",
               powerCable ? powerCablePlan.ruleLabel : "",
               powerCableSummary ? (powerCableSummary.watts / 1000).toFixed(3) : "",
-              powerCableSummary ? ((powerCableSummary.panels * state.cabinetAveragePowerW) / 1000).toFixed(3) : "",
+              powerCableSummary ? ((powerCableSummary.averageWatts || 0) / 1000).toFixed(3) : "",
               powerCableSummary ? powerCableSummary.amps.toFixed(3) : ""
             ]);
           }
@@ -13800,8 +13838,8 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           `Cabinet pixel size: ${state.pixelsW} x ${state.pixelsH} px`,
           `Physical cabinet size: ${state.cabinetW} x ${state.cabinetH} mm`,
           `Pixel pitch: ${pitchMismatch(m) ? `${m.pitchW.toFixed(3)} / ${m.pitchH.toFixed(3)} mm W/H` : `${m.pitchAvg.toFixed(3)} mm`}`,
-          `Signal routing: ${portPlan.usedPorts} main signal cable(s), ${portPlan.loopCount || 0} P2P signal loop cable(s), ${portPlan.effectivePanelsPerPort} panels/port safe limit`,
-          `Power routing: ${powerCablePlan.cableCount} main power cable(s), ${powerCablePlan.loopCount || 0} P2P power loop cable(s), ${powerCablePlan.panelsPerCable} panels/main field limit`,
+          `Signal routing: ${portPlan.usedPorts} main signal cable(s), ${portPlan.loopCount || 0} P2P signal loop cable(s), ${formatInteger(portPlan.pixelLimit)} px/main budget`,
+          `Power routing: ${powerCablePlan.cableCount} main power cable(s), ${powerCablePlan.loopCount || 0} P2P power loop cable(s), ${(powerCablePlan.wattsPerCableLimit / 1000).toFixed(2)} kW/main load budget`,
           `Blank / virtual panels: ${m.virtualPanels}`,
           "",
           "Design rules:",
@@ -13844,9 +13882,11 @@ right transparent mesh 0.5x3m 500x1000mm 128x128px qty 3`;
           "Count rule: each active main run feeds its first panel directly, so P2P loop cables = panels on that run - 1.",
           "",
           `Signal totals: ${signalLoads.length} main signal cable(s), ${portPlan.loopCount || 0} P2P signal loop cable(s).`,
+          `Signal budget: ${formatInteger(portPlan.pixelLimit)} px per main signal cable.`,
           ...signalLoads.map((load) => `- S${load.card}:P${load.port}: 1 main signal feed + ${load.loops || 0} P2P signal loop cable(s), ${load.panels} panel(s), ${formatInteger(load.pixels)} px${load.boundsCols && load.boundsRows ? `, zone ${load.boundsCols} x ${load.boundsRows}` : ""}`),
           "",
           `Power totals: ${powerLoads.length} main power cable(s), ${powerCablePlan.loopCount || 0} P2P power loop cable(s).`,
+          `Power budget: ${(powerCablePlan.wattsPerCableLimit / 1000).toFixed(2)} kW max per main power cable.`,
           ...powerLoads.map((cable) => `- ${cable.label}${state.phaseMode === "three" ? ` L${cable.phase}` : ""}: 1 main power feed + ${cable.loops || 0} P2P power loop cable(s), ${cable.panels} panel(s), ${(cable.watts / 1000).toFixed(2)} kW max, ${cable.amps.toFixed(1)} A`),
           "",
           `Display load: ${powerPlan.totalKw.toFixed(2)} kW max / ${powerPlan.averageKw.toFixed(2)} kW average.`,
